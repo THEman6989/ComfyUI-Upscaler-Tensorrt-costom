@@ -25,42 +25,23 @@ class ColoredLogger:
         self.logger = logging.getLogger(name)
         self.logger.setLevel(logging.DEBUG)
         self.app_name = name
-        
-        # Prevent message propagation to parent loggers
         self.logger.propagate = False
-        
-        # Clear existing handlers
         self.logger.handlers = []
-        
-        # Create console handler
         handler = logging.StreamHandler(sys.stdout)
         handler.setLevel(logging.DEBUG)
         
-        # Custom formatter class to handle colored components
         class ColoredFormatter(logging.Formatter):
             def format(self, record):
-                # Color the level name according to severity
                 level_color = ColoredLogger.LEVEL_COLORS.get(record.levelname, '')
                 colored_levelname = f"{level_color}{record.levelname}{ColoredLogger.COLORS['RESET']}"
-                
-                # Color the logger name in blue
                 colored_name = f"{ColoredLogger.COLORS['BLUE']}{record.name}{ColoredLogger.COLORS['RESET']}"
-                
-                # Set the colored components
                 record.levelname = colored_levelname
                 record.name = colored_name
-                
                 return super().format(record)
         
-        # Create formatter with the new format
         formatter = ColoredFormatter('[%(name)s|%(levelname)s] - %(message)s')
         handler.setFormatter(formatter)
-        
         self.logger.addHandler(handler)
-
-
-    def debug(self, message):
-        self.logger.debug(f"{self.COLORS['BLUE']}{message}{self.COLORS['RESET']}")
 
     def info(self, message):
         self.logger.info(f"{self.COLORS['GREEN']}{message}{self.COLORS['RESET']}")
@@ -71,36 +52,18 @@ class ColoredLogger:
     def error(self, message):
         self.logger.error(f"{self.COLORS['RED']}{message}{self.COLORS['RESET']}")
 
-    def critical(self, message):
-        self.logger.critical(f"{self.COLORS['MAGENTA']}{message}{self.COLORS['RESET']}")
-
 def download_file(url, save_path):
-    """
-    Download a file from URL with progress bar
-    
-    Args:
-        url (str): URL of the file to download
-        save_path (str): Path to save the file as
-    """
     GREEN = '\033[92m'
     RESET = '\033[0m'
     response = requests.get(url, stream=True)
     total_size = int(response.headers.get('content-length', 0))
-    
-    with open(save_path, 'wb') as file, tqdm(
-        desc=save_path,
-        total=total_size,
-        unit='iB',
-        unit_scale=True,
-        unit_divisor=1024,
-        colour='green',
-        bar_format=f'{GREEN}{{l_bar}}{{bar}}{RESET}{GREEN}{{r_bar}}{RESET}' 
-    ) as progress_bar:
+    with open(save_path, 'wb') as file, tqdm(desc=save_path, total=total_size, unit='iB', unit_scale=True, unit_divisor=1024, colour='green', bar_format=f'{GREEN}{{l_bar}}{{bar}}{RESET}{GREEN}{{r_bar}}{RESET}') as progress_bar:
         for data in response.iter_content(chunk_size=1024):
             size = file.write(data)
             progress_bar.update(size)
 
-def get_final_resolutions(width, height, resize_to):
+# WICHTIG: Hier wird 'model_scale' übergeben
+def get_final_resolutions(width, height, resize_to, model_scale=4):
     final_width = None
     final_height = None
     aspect_ratio = float(width/height)
@@ -119,9 +82,8 @@ def get_final_resolutions(width, height, resize_to):
             final_width = 3840
             final_height = 2160
         case "none":
-            final_width = width*4
-            final_height = height*4
-
+            final_width = width * model_scale
+            final_height = height * model_scale
         case _:
             resize_factor = float(resize_to.split('x')[0])
             final_width = width*resize_factor
@@ -129,10 +91,9 @@ def get_final_resolutions(width, height, resize_to):
 
     if aspect_ratio == 1.0:
         final_width = final_height
-
     if aspect_ratio < 1.0 and resize_to not in ("none", "1x", "1.5x", "2x", "2.5x", "3x", "3.5x", "4x", "5x", "6x", "7x", "8x", "9x", "10x"):
         temp = final_width
         final_width = final_height
         final_height = temp
 
-    return (int(final_width), int(final_height)) # must be whole numbers
+    return (int(final_width), int(final_height))
