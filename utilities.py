@@ -62,7 +62,7 @@ def download_file(url, save_path):
             size = file.write(data)
             progress_bar.update(size)
 
-# WICHTIG: Hier wird 'model_scale' übergeben
+# WICHTIG: Nimmt jetzt model_scale entgegen
 def get_final_resolutions(width, height, resize_to, model_scale=4):
     final_width = None
     final_height = None
@@ -82,6 +82,7 @@ def get_final_resolutions(width, height, resize_to, model_scale=4):
             final_width = 3840
             final_height = 2160
         case "none":
+            # Hier nutzen wir den variablen Faktor (1x, 2x, 4x...)
             final_width = width * model_scale
             final_height = height * model_scale
         case _:
