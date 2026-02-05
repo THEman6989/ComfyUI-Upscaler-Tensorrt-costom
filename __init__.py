@@ -12,10 +12,10 @@ import json
 
 logger = ColoredLogger("ComfyUI-Upscaler-Tensorrt")
 
-# --- SETTINGS FÜR DEIN SYSTEM (High-Res) ---
+# --- DEINE ANGEPASSTEN LIMITS ---
 IMAGE_DIM_MIN = 64
 IMAGE_DIM_OPT = 1024
-IMAGE_DIM_MAX = 2600  # Deine angepasste Max-Größe
+IMAGE_DIM_MAX = 2600  # Max auf 2600 gesetzt
 
 # --- Config Loader ---
 def load_node_config(config_filename="load_upscaler_config.json"):
@@ -34,7 +34,7 @@ def load_node_config(config_filename="load_upscaler_config.json"):
 LOAD_UPSCALER_NODE_CONFIG = load_node_config()
 
 # ==============================================================================
-# V2 NODE: UPSCALER (Verarbeitet das Bild)
+# V2 NODE: UPSCALER (Verarbeitet das Bild mit korrektem Faktor)
 # ==============================================================================
 class UpscalerTensorrtV2:
     @classmethod
@@ -67,8 +67,7 @@ class UpscalerTensorrtV2:
             if dim > IMAGE_DIM_MAX or dim < IMAGE_DIM_MIN:
                 raise ValueError(f"Input image dimensions fall outside of the supported range: {IMAGE_DIM_MIN} to {IMAGE_DIM_MAX} px! Input: {W}x{H}")
 
-        # Scale Faktor aus der geladenen Engine holen (wurde im V2 Loader gesetzt)
-        # Fallback auf 4, falls irgendwas schief geht
+        # Scale Faktor holen (Default 4x Fallback)
         model_scale = getattr(upscaler_trt_model, "upscale_factor", 4)
 
         if resize_to == "custom":
@@ -79,7 +78,7 @@ class UpscalerTensorrtV2:
 
         logger.info(f"V2 Upscale | Model Scale: {model_scale}x | Input: {W}x{H} -> Native Output: {W*model_scale}x{H*model_scale} | Final: {final_width}x{final_height}")
 
-        # Shape Dictionary basierend auf dem expliziten Scale Faktor
+        # WICHTIG: Hier wird der Speicher basierend auf dem Faktor reserviert
         shape_dict = {
             "input": {"shape": (1, 3, H, W)},
             "output": {"shape": (1, 3, H*model_scale, W*model_scale)}, 
@@ -114,7 +113,7 @@ class UpscalerTensorrtV2:
         return (output,)
 
 # ==============================================================================
-# V2 NODE: LOADER (Baut/Lädt die Engine mit explizitem Namen)
+# V2 NODE: LOADER (Baut Engine mit explizitem Namen & Parametern)
 # ==============================================================================
 class LoadUpscalerTensorrtModelV2:
     @classmethod
@@ -125,14 +124,14 @@ class LoadUpscalerTensorrtModelV2:
         model_options = model_config.get("options", ["4x-UltraSharp"])
         model_default = model_config.get("default", "4x-UltraSharp")
         
-        # Hier ist die neue manuelle Auswahl
+        # Manuelle Auswahl für volle Kontrolle
         upscale_options = ["4x", "2x", "1x", "8x"]
 
         return {
             "required": {
                 "model": (model_options, {"default": model_default}),
                 "precision": (precision_config.get("options", ["fp16"]), {"default": "fp16"}),
-                "upscale_type": (upscale_options, {"default": "4x", "tooltip": "Explicitly set the model scale (e.g. 1x for detailers, 4x for standard upscalers)."}),
+                "upscale_type": (upscale_options, {"default": "4x", "tooltip": "Manually set the model scale."}),
             }
         }
     
@@ -152,29 +151,23 @@ class LoadUpscalerTensorrtModelV2:
         # Scale Integer extrahieren ("4x" -> 4)
         scale_int = int(upscale_type.replace("x", ""))
         
-        # ONNX Pfad
         onnx_model_path = os.path.join(onnx_models_dir, f"{model}.onnx")
         
-        # Parameter für den Engine-Namen
-        engine_channel = 3
-        # Hier nutzen wir deine globalen Limits
+        # Limits für Dateinamen
         min_h, min_w = IMAGE_DIM_MIN, IMAGE_DIM_MIN
         max_h, max_w = IMAGE_DIM_MAX, IMAGE_DIM_MAX
         
-        # NEUER NAMENS-STANDARD:
-        # {Model}_{Precision}_{Scale}x_{Min}x{Min}_{Max}x{Max}_{TrtVersion}.trt
+        # Neuer Dateiname: Enthält Scale UND Min/Max Limits
+        # Beispiel: model_fp16_1x_64x64_2600x2600_v10.x.x.trt
         engine_name = f"{model}_{precision}_{upscale_type}_{min_h}x{min_w}_{max_h}x{max_w}_{tensorrt.__version__}.trt"
         tensorrt_model_path = os.path.join(tensorrt_models_dir, engine_name)
 
-        # 1. Prüfen, ob genau diese Engine schon existiert
         if os.path.exists(tensorrt_model_path):
-            logger.info(f"V2: Found existing engine matching criteria: {engine_name}")
+            logger.info(f"V2: Found existing engine: {engine_name}")
         else:
-            # 2. Wenn nicht, neu bauen
-            logger.info(f"V2: Engine not found or params changed. Building new: {engine_name}")
+            logger.info(f"V2: Building NEW engine: {engine_name}")
             
             if not os.path.exists(onnx_model_path):
-                # Download Fallback
                 onnx_url = f"https://huggingface.co/yuvraj108c/ComfyUI-Upscaler-Onnx/resolve/main/{model}.onnx"
                 logger.info(f"Downloading ONNX: {onnx_url}")
                 download_file(url=onnx_url, save_path=onnx_model_path)
@@ -184,7 +177,6 @@ class LoadUpscalerTensorrtModelV2:
             engine = Engine(tensorrt_model_path)
             
             # Engine Build mit den Limits
-            # Wir nutzen hier statische Batch Size 1 für optimale Performance in Comfy
             engine.build(
                 onnx_path=onnx_model_path,
                 fp16= True if precision == "fp16" else False,
@@ -199,39 +191,35 @@ class LoadUpscalerTensorrtModelV2:
             e = time.time()
             logger.info(f"V2: Build finished in {(e-s):.2f} seconds")
 
-        # Laden
         logger.info(f"V2: Loading Engine...")
         mm.soft_empty_cache()
         engine = Engine(tensorrt_model_path)
         engine.load()
         
-        # WICHTIG: Den Scale-Faktor an das Objekt heften, damit der Upscaler-Node ihn kennt
+        # Wir speichern den Faktor im Objekt für den Upscaler Node
         engine.upscale_factor = scale_int
 
         return (engine,)
 
-# Alte Klassen (V1) können bleiben oder entfernt werden, hier bleiben sie für Kompatibilität
-# (Ich habe sie hier gekürzt, um Fokus auf V2 zu legen, aber im File solltest du sie behalten wenn du alte Workflows nicht brechen willst)
-class UpscalerTensorrt: # Legacy V1
+# Legacy Klasse (gekürzt, damit alte Workflows nicht crashen)
+class UpscalerTensorrt:
     @classmethod
     def INPUT_TYPES(s): return {"required": {"images": ("IMAGE",), "upscaler_trt_model": ("UPSCALER_TRT_MODEL",), "resize_to": (["none"],)}}
     RETURN_NAMES = ("IMAGE",)
     FUNCTION = "upscaler_tensorrt"
     CATEGORY = "tensorrt"
-    def upscaler_tensorrt(self, **kwargs): pass # Legacy Logic here if needed
+    def upscaler_tensorrt(self, **kwargs): pass 
 
-# MAPPINGS
+# MAPPINGS: V2 ist jetzt der Standard oder als Option verfügbar
 NODE_CLASS_MAPPINGS = {
-    "UpscalerTensorrt": UpscalerTensorrtV2,         # Wir ersetzen den Standard V1 durch V2 Logic oder nutzen separate Namen
-    "LoadUpscalerTensorrtModel": LoadUpscalerTensorrtModelV2, # Empfehlung: Ersetze die Standard Nodes direkt, ist sauberer im Fork
-    # Falls du beide parallel willst:
     "UpscalerTensorrtV2": UpscalerTensorrtV2,
     "LoadUpscalerTensorrtModelV2": LoadUpscalerTensorrtModelV2,
+    # Optional: Alte Namen überschreiben, wenn du V1 komplett ersetzen willst:
+    # "UpscalerTensorrt": UpscalerTensorrtV2,
+    # "LoadUpscalerTensorrtModel": LoadUpscalerTensorrtModelV2,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "UpscalerTensorrt": "Upscaler Tensorrt ⚡ (Legacy)",
-    "LoadUpscalerTensorrtModel": "Load Upscale Tensorrt Model (Legacy)",
     "UpscalerTensorrtV2": "Upscaler Tensorrt V2 ⚡",
     "LoadUpscalerTensorrtModelV2": "Load Upscale Tensorrt Model V2",
 }
